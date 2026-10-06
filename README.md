@@ -1,10 +1,12 @@
-# Azure Databricks Medallion Lakehouse Pipeline
+# Azure Databricks Medallion Lakehouse Pipeline — Economic Data Quality & Analytics
 [![Delta Lake](https://img.shields.io/badge/Delta_Lake-00ADD8?style=for-the-badge&logo=apache-spark&logoColor=white)](https://delta.io/)
 [![Azure Databricks](https://img.shields.io/badge/Azure_Databricks-FF3621?style=for-the-badge&logo=databricks&logoColor=white)](https://azure.microsoft.com/en-us/products/databricks/)
 [![PySpark](https://img.shields.io/badge/PySpark-E25A1C?style=for-the-badge&logo=apache-spark&logoColor=white)](https://spark.apache.org/)
 [![Azure ADLS Gen2](https://img.shields.io/badge/Azure_ADLS_Gen2-0078D4?style=for-the-badge&logo=microsoft-azure&logoColor=white)](https://azure.microsoft.com/en-us/products/storage/data-lake-storage/)
 
-A production-grade, end-to-end **Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold)** ETL/ELT pipeline implemented with **PySpark** and **Delta Lake** on **Azure Databricks** with **Azure Data Lake Storage Gen2 (ADLS Gen2)**.
+> **Portfolio Demo Project** — Demonstrating practical application of Databricks Academy Accreditation principles, bridging relational DBA expertise (ACID, data integrity, indexing) with modern distributed Lakehouse engineering (Delta Lake, PySpark, ADLS Gen2).
+
+An end-to-end **Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold)** ETL/ELT pipeline covering schema-on-read ingestion, circuit-breaker data quality validations, idempotent `MERGE INTO` operations, analytical fact modeling, and `Z-ORDER` query optimization.
 
 ---
 
