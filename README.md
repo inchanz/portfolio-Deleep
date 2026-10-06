@@ -13,7 +13,8 @@ An end-to-end **SQL-first Medallion Architecture (Bronze $\rightarrow$ Silver $\
 
 ## 📌 Key Architectural Highlights
 - **SQL-First Transformations**: Core transformations, deduplication, and fact aggregations written in declarative ANSI/Databricks SQL.
-- **Data Quality Circuit Breaker**: Pre-write sanity checks (null checks on primary keys and duplicate composite key detection) that halt execution before bad data pollutes Silver.
+- **Data Quality Circuit Breaker**: Differentiated validation gates—null primary keys trigger an immediate hard stop to prevent corrupt records from entering Silver, while duplicate composite keys are logged as warnings since they are safely resolved by Silver window deduplication.
+
 - **Idempotent Upserts**: Zero duplicate loads handled via native Delta Lake `MERGE INTO` statements.
 - **Engineered Audit Trail**: Automatic lineage tracking via metadata attributes (`_ingestion_timestamp`, `_source_file_name`, `_silver_updated_at`).
 - **Lakehouse Storage Optimization**: File compaction and multi-dimensional clustering using `OPTIMIZE` and `Z-ORDER BY (country_code, year)`.
@@ -85,17 +86,19 @@ flowchart LR
   ```
 
 ### 2. Data Quality Circuit Breaker ([`sql/02_silver_quality_gate.sql`](sql/02_silver_quality_gate.sql))
-- Halts execution if either check fails:
+- **Hard-Stop Gate**: Primary key nullability is non-negotiable; execution halts immediately if null keys are detected.
+- **Audit Warning**: Duplicate composite keys are logged for monitoring but do not abort execution, as they are deterministically handled downstream in the Silver deduplication staging view.
   ```sql
-  -- 1. Check null primary keys:
+  -- 1. Check null primary keys (Hard Stop):
   SELECT COUNT(*) FROM bronze_economic_data WHERE country_code IS NULL OR year IS NULL;
 
-  -- 2. Check duplicates on composite keys:
+  -- 2. Check duplicates on composite keys (Audit Warning):
   SELECT country_code, year, COUNT(*) 
   FROM bronze_economic_data 
   GROUP BY country_code, year 
   HAVING COUNT(*) > 1;
   ```
+
 
 ### 3. Silver Cleansing & Idempotent Upsert ([`sql/03_silver_merge.sql`](sql/03_silver_merge.sql))
 - Trims whitespace, standardizes casing, and explicitly casts data types in a staging temporary view:
@@ -145,7 +148,40 @@ flowchart LR
   ```
 
 ### 5. Thin Python Orchestrator ([`runner.py`](runner.py))
-- Reads the SQL files sequentially, runs the quality gate assertion, and exits with a clear error code if checks fail.
+Executes each SQL file sequentially and runs both Quality Gate checks (null primary keys and duplicate composite keys) **strictly before** the Silver layer is touched:
+
+```python
+def run_quality_gate(spark: SparkSession):
+    # Check 1: Null Primary Keys (Hard Stop)
+    null_result = spark.sql("""
+        SELECT COUNT(*) AS cnt 
+        FROM bronze_economic_data 
+        WHERE country_code IS NULL OR year IS NULL
+    """).collect()[0]["cnt"]
+
+    if null_result > 0:
+        raise ValueError(f"Quality Gate FAILED: Found {null_result} null keys! Halting pipeline.")
+
+    # Check 2: Duplicate Composite Keys
+    dup_result = spark.sql("""
+        SELECT COUNT(*) AS cnt FROM (
+            SELECT country_code, year 
+            FROM bronze_economic_data 
+            GROUP BY country_code, year 
+            HAVING COUNT(*) > 1
+        )
+    """).collect()[0]["cnt"]
+
+    if dup_result > 0:
+        print(f"Notice: {dup_result} duplicate key groups found. Deduplication window will resolve this in Silver.")
+
+def main():
+    spark = SparkSession.builder.appName("Medallion-SQL-Pipeline").getOrCreate()
+    execute_sql_file(spark, "sql/01_bronze.sql")     # 1. Ingest Bronze
+    run_quality_gate(spark)                          # 2. Gate (Runs BEFORE Silver)
+    execute_sql_file(spark, "sql/03_silver_merge.sql")# 3. Clean & Merge into Silver
+    execute_sql_file(spark, "sql/04_gold_analytics.sql") # 4. Gold Facts & Z-ORDER
+```
 
 ---
 
