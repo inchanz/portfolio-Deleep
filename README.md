@@ -1,21 +1,23 @@
 # Azure Databricks Medallion Lakehouse Pipeline — Economic Data Quality & Analytics
 [![Delta Lake](https://img.shields.io/badge/Delta_Lake-00ADD8?style=for-the-badge&logo=apache-spark&logoColor=white)](https://delta.io/)
 [![Azure Databricks](https://img.shields.io/badge/Azure_Databricks-FF3621?style=for-the-badge&logo=databricks&logoColor=white)](https://azure.microsoft.com/en-us/products/databricks/)
-[![PySpark](https://img.shields.io/badge/PySpark-E25A1C?style=for-the-badge&logo=apache-spark&logoColor=white)](https://spark.apache.org/)
+[![SQL](https://img.shields.io/badge/Databricks_SQL-4479A1?style=for-the-badge&logo=mysql&logoColor=white)](https://docs.databricks.com/sql/)
+[![Python](https://img.shields.io/badge/Python-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Azure ADLS Gen2](https://img.shields.io/badge/Azure_ADLS_Gen2-0078D4?style=for-the-badge&logo=microsoft-azure&logoColor=white)](https://azure.microsoft.com/en-us/products/storage/data-lake-storage/)
 
-> **Portfolio Demo Project** — Demonstrating practical application of Databricks Academy Accreditation principles, bridging relational DBA expertise (ACID, data integrity, indexing) with modern distributed Lakehouse engineering (Delta Lake, PySpark, ADLS Gen2).
+> **Portfolio Demo Project** — Demonstrating practical application of Databricks Academy Accreditation principles, bridging relational DBA expertise (ACID, constraints, indexing, ANSI SQL) with modern distributed Lakehouse engineering (Delta Lake, ADLS Gen2, PySpark orchestration).
 
-An end-to-end **Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold)** ETL/ELT pipeline covering schema-on-read ingestion, circuit-breaker data quality validations, idempotent `MERGE INTO` operations, analytical fact modeling, and `Z-ORDER` query optimization.
+An end-to-end **SQL-first Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow$ Gold)** ETL/ELT pipeline covering schema-on-read ingestion, circuit-breaker data quality validations, idempotent `MERGE INTO` operations, analytical fact modeling, and `Z-ORDER` query optimization.
 
 ---
 
 ## 📌 Key Architectural Highlights
-- **Medallion Architecture**: Segregated storage into Landing, Bronze (Raw append-only), Silver (Enriched & Deduplicated), and Gold (Analytical Fact & Aggregate).
-- **Data Quality Circuit Breaker**: Pre-write assertions (null-rate thresholds on primary keys and composite key uniqueness) that halt pipeline execution upon quality breach.
-- **Idempotent Upserts**: Zero duplicate loads handled via Delta Lake `MERGE INTO` operations.
-- **Engineered Audit Trail**: Automatic lineage tracking via metadata attributes (`_ingestion_timestamp`, `_source_file_name`, `_batch_id`, `_silver_updated_at`).
+- **SQL-First Transformations**: Core transformations, deduplication, and fact aggregations written in declarative ANSI/Databricks SQL.
+- **Data Quality Circuit Breaker**: Pre-write sanity checks (null checks on primary keys and duplicate composite key detection) that halt execution before bad data pollutes Silver.
+- **Idempotent Upserts**: Zero duplicate loads handled via native Delta Lake `MERGE INTO` statements.
+- **Engineered Audit Trail**: Automatic lineage tracking via metadata attributes (`_ingestion_timestamp`, `_source_file_name`, `_silver_updated_at`).
 - **Lakehouse Storage Optimization**: File compaction and multi-dimensional clustering using `OPTIMIZE` and `Z-ORDER BY (country_code, year)`.
+- **Thin Python Orchestration**: A clean ~35-line Python runner that manages execution flow, logs steps, and enforces quality assertions.
 
 ---
 
@@ -24,15 +26,15 @@ An end-to-end **Medallion Architecture (Bronze $\rightarrow$ Silver $\rightarrow
 ```mermaid
 flowchart LR
     subgraph Ingestion["Ingestion Tier"]
-        A["External Feed / REST API"] -->|"Raw Ingestion"| L[("ADLS Gen2 Landing")]
+        A["External Feed / CSV"] -->|"Raw Ingestion"| L[("ADLS Gen2 Landing")]
     end
 
     subgraph Medallion["Delta Lake Medallion Tiers"]
-        L -->|"Preserve Raw + Audit Columns"| B[("Bronze Delta Table\n(Raw Append-Only)")]
-        B -->|"Data Quality Gate\n+ Deduplication"| DQ{"Quality Gate\nAssertions"}
-        DQ -->|"Pass: MERGE INTO"| S[("Silver Delta Table\n(Cleansed & Conformed)")]
+        L -->|"01_bronze.sql\nSchema-on-Read + Audit"| B[("Bronze Delta Table\n(Raw Append-Only)")]
+        B -->|"02_silver_quality_gate.sql\nNulls & Duplicate Checks"| DQ{"Quality Gate\nAssertions"}
+        DQ -->|"Pass: 03_silver_merge.sql\nMERGE INTO"| S[("Silver Delta Table\n(Cleansed & Conformed)")]
         DQ -.->|"Fail: Halt Execution"| DLQ["Pipeline Failure Alert"]
-        S -->|"Lag Metrics\n+ Fact Modeling"| G[("Gold Delta Table\n(Aggregated Facts)")]
+        S -->|"04_gold_analytics.sql\nLAG() YoY Growth + Z-ORDER"| G[("Gold Delta Table\n(Aggregated Facts)")]
     end
 
     subgraph Serving["Analytics & Consumption Tier"]
@@ -51,54 +53,80 @@ flowchart LR
 ```
 ├── .github/
 │   └── workflows/
-│       └── ci.yml                  # CI workflow running automated unit & quality tests
-├── pipeline/
-│   ├── config.py                   # ADLS Gen2 paths, ABFSS URIs & pipeline constants
-│   ├── quality_gate.py             # Reusable Data Quality Gate (Not-null & Uniqueness)
-│   ├── 01_landing_to_bronze.py     # Schema-on-read ingestion with audit tracking
-│   ├── 02_bronze_to_silver.py      # Cleansing, deduplication & MERGE INTO upsert
-│   ├── 03_silver_to_gold.py        # Analytical modeling & Delta Z-ORDER optimization
-│   ├── orchestrator.py             # End-to-end execution runner
-│   └── README.md                   # Technical setup instructions
+│       └── ci.yml                     # CI workflow running automated pipeline checks
+├── sql/
+│   ├── 01_bronze.sql                  # Schema-on-read ingestion with lineage metadata
+│   ├── 02_silver_quality_gate.sql     # Null checks & composite key duplicate assertions
+│   ├── 03_silver_merge.sql            # Cleansing, window deduplication & MERGE INTO upsert
+│   └── 04_gold_analytics.sql          # Analytical fact modeling & Delta Z-ORDER optimization
+├── runner.py                          # Thin Python driver (~35 lines) executing SQL stages
+└── README.md                          # Project documentation & technical architecture
 ```
 
 ---
 
 ## 🛠️ Step-by-Step Data Flow
 
-### 1. Landing to Bronze Layer ([`01_landing_to_bronze.py`](pipeline/01_landing_to_bronze.py))
-- Reads raw CSV/JSON payload without schema inference (`inferSchema=False`) to avoid dropping malformed rows.
-- Enriches records with lineage audit metadata:
-  ```python
-  bronze_df = (
-      raw_df
-      .withColumn("_ingestion_timestamp", current_timestamp())
-      .withColumn("_source_file_name", input_file_name())
-      .withColumn("_batch_id", lit(batch_id))
-  )
-  ```
-- Appends into the Delta Lake `bronze` table.
-
-### 2. Data Quality & Silver Cleansing ([`02_bronze_to_silver.py`](pipeline/02_bronze_to_silver.py))
-- Normalizes attributes to standard `snake_case` and enforces explicit type casting.
-- Simple deduplication: `dropDuplicates(["country_code", "year"])`.
-- **Quality Gate Verification ([`quality_gate.py`](pipeline/quality_gate.py))**:
-  - `validate_not_null`: Zero tolerance for null primary keys.
-  - `validate_unique_keys`: Composite key uniqueness check (`groupBy().count().filter(count > 1)`).
-- **Idempotent Upsert (`MERGE INTO`)**:
-  ```python
-  silver_table.alias("target").merge(
-      source=silver_df.alias("source"),
-      condition="target.country_code = source.country_code AND target.year = source.year"
-  ).whenMatchedUpdate(set={...}).whenNotMatchedInsert(values={...}).execute()
-  ```
-
-### 3. Gold Analytical Modeling & Z-Order Indexing ([`03_silver_to_gold.py`](pipeline/03_silver_to_gold.py))
-- Computes analytical metrics such as Year-over-Year (YoY) growth percentages using window `lag()`.
-- Collocates data and resolves small file fragmentation using Delta Lake's `OPTIMIZE` and `Z-ORDER`:
+### 1. Landing to Bronze Layer ([`sql/01_bronze.sql`](sql/01_bronze.sql))
+- Preserves raw records as strings to prevent ingest drops.
+- Captures system lineage metadata (`_ingestion_timestamp`, `_source_file_name`):
   ```sql
-  OPTIMIZE delta.`<gold_path>` ZORDER BY (country_code, year)
+  CREATE TABLE IF NOT EXISTS bronze_economic_data (
+      country_name STRING, country_code STRING, year STRING, value STRING,
+      _ingestion_timestamp TIMESTAMP, _source_file_name STRING
+  ) USING DELTA;
+
+  INSERT INTO bronze_economic_data
+  SELECT 
+      Country_Name, Country_Code, Year, Value,
+      CURRENT_TIMESTAMP() AS _ingestion_timestamp,
+      input_file_name() AS _source_file_name
+  FROM csv.`/tmp/raw_economic_data.csv`;
   ```
+
+### 2. Data Quality Circuit Breaker ([`sql/02_silver_quality_gate.sql`](sql/02_silver_quality_gate.sql))
+- Halts execution if either check fails:
+  ```sql
+  -- 1. Check null primary keys:
+  SELECT COUNT(*) FROM bronze_economic_data WHERE country_code IS NULL OR year IS NULL;
+
+  -- 2. Check duplicates on composite keys:
+  SELECT country_code, year, COUNT(*) 
+  FROM bronze_economic_data 
+  GROUP BY country_code, year 
+  HAVING COUNT(*) > 1;
+  ```
+
+### 3. Silver Cleansing & Idempotent Upsert ([`sql/03_silver_merge.sql`](sql/03_silver_merge.sql))
+- Trims whitespace, standardizes casing, and explicitly casts data types.
+- Deduplicates incoming batches via windowing and performs an idempotent `MERGE INTO`:
+  ```sql
+  MERGE INTO silver_economic_data AS target
+  USING v_cleaned_bronze AS source
+  ON target.country_code = source.country_code AND target.year = source.year
+  WHEN MATCHED THEN
+      UPDATE SET target.gdp_value = source.gdp_value, target._silver_updated_at = CURRENT_TIMESTAMP()
+  WHEN NOT MATCHED THEN
+      INSERT (country_code, country_name, year, gdp_value, _source_file_name, _silver_updated_at)
+      VALUES (source.country_code, source.country_name, source.year, source.gdp_value, source._source_file_name, CURRENT_TIMESTAMP());
+  ```
+
+### 4. Gold Analytical Modeling & Storage Optimization ([`sql/04_gold_analytics.sql`](sql/04_gold_analytics.sql))
+- Computes analytical metrics such as Year-over-Year (YoY) growth rate `%` using `LAG()`:
+  ```sql
+  CREATE TABLE IF NOT EXISTS gold_fact_annual_gdp_growth USING DELTA AS
+  SELECT country_code, country_name, year, gdp_value,
+         ROUND(((gdp_value - LAG(gdp_value, 1) OVER (PARTITION BY country_code ORDER BY year)) 
+                / LAG(gdp_value, 1) OVER (PARTITION BY country_code ORDER BY year)) * 100, 2) AS yoy_growth_pct
+  FROM silver_economic_data;
+  ```
+- Reorganizes files on disk to prevent small-file fragmentation and enables data skipping:
+  ```sql
+  OPTIMIZE gold_fact_annual_gdp_growth ZORDER BY (country_code, year);
+  ```
+
+### 5. Thin Python Orchestrator ([`runner.py`](runner.py))
+- Reads the SQL files sequentially, runs the quality gate assertion, and exits with a clear error code if checks fail.
 
 ---
 
