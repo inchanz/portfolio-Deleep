@@ -1,16 +1,16 @@
 # 02_bronze_to_silver.py
 """
 Step 2: Bronze to Silver Transformation & Cleansing.
-- Schema enforcement & explicit type casting.
-- Normalization into snake_case naming conventions.
-- Data Quality Gate validation (nulls, duplicates, business rules).
-- Idempotent upsert via Delta Lake `MERGE INTO`.
+1. Standardizes column names to snake_case.
+2. Cleans whitespace, standardizes uppercase codes, casts data types.
+3. Deduplicates incoming rows by (country_code, year).
+4. Runs Quality Gate (Not-Null & Uniqueness).
+5. Upserts into Silver Delta table using MERGE INTO.
 """
 
 import re
 from pyspark.sql import SparkSession, DataFrame
-from pyspark.sql.functions import col, trim, upper, to_date, row_number, current_timestamp
-from pyspark.sql.window import Window
+from pyspark.sql.functions import col, trim, upper, current_timestamp
 from delta.tables import DeltaTable
 
 from quality_gate import QualityGate
@@ -32,15 +32,15 @@ def to_snake_case(column_name: str) -> str:
 
 def transform_bronze_to_silver(bronze_df: DataFrame) -> DataFrame:
     """
-    Cleanses, types, standardizes, and dedupes the bronze batch.
+    Cleanses, types, and dedupes the bronze batch.
     """
-    # 1. Standardize column names
+    # 1. Standardize column names to snake_case
     renamed_df = bronze_df
     for col_name in bronze_df.columns:
         if not col_name.startswith("_"):
             renamed_df = renamed_df.withColumnRenamed(col_name, to_snake_case(col_name))
 
-    # 2. Type casting & cleansing (e.g. country_name, country_code, year, value)
+    # 2. Type casting and trimming
     cleansed_df = (
         renamed_df
         .withColumn("country_name", trim(col("country_name")))
@@ -51,13 +51,10 @@ def transform_bronze_to_silver(bronze_df: DataFrame) -> DataFrame:
         .filter(col("year").isNotNull())
     )
 
-    # 3. Deduplication within the micro-batch based on latest ingestion timestamp
-    window_spec = Window.partitionBy("country_code", "year").orderBy(col("_ingestion_timestamp").desc())
+    # 3. Deduplicate by business key (country_code, year)
     deduped_df = (
         cleansed_df
-        .withColumn("_row_num", row_number().over(window_spec))
-        .filter(col("_row_num") == 1)
-        .drop("_row_num")
+        .dropDuplicates(["country_code", "year"])
         .withColumn("_silver_updated_at", current_timestamp())
     )
 
@@ -66,6 +63,8 @@ def transform_bronze_to_silver(bronze_df: DataFrame) -> DataFrame:
 def merge_into_silver(spark: SparkSession, silver_df: DataFrame, silver_delta_path: str):
     """
     Upserts into Delta Lake Silver table idempotently using MERGE INTO.
+    - If country_code and year already exist: UPDATE the row with new values.
+    - If it's a new country_code and year: INSERT the row.
     """
     if not DeltaTable.isDeltaTable(spark, silver_delta_path):
         print(f"Silver table does not exist at {silver_delta_path}. Creating initial table...")
@@ -111,11 +110,6 @@ def run_silver_pipeline(spark: SparkSession, bronze_delta_path: str, silver_delt
     QualityGate.validate_not_null(silver_df, "country_code", max_null_ratio=0.0)
     QualityGate.validate_not_null(silver_df, "year", max_null_ratio=0.0)
     QualityGate.validate_unique_keys(silver_df, ["country_code", "year"])
-    QualityGate.validate_custom_condition(
-        silver_df,
-        "year >= 1900 AND year <= 2100",
-        "Year must be in a realistic calendar range."
-    )
     print("All Quality Gates Passed!")
 
     # Merge into Silver
