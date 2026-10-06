@@ -113,4 +113,5 @@ pytest tests/
 ---
 
 ## 👤 Author
-- **Deleep Augustian** — [LinkedIn](https://linkedin.com) | [GitHub Profile](https://github.com)
+- **Deleep Augustian** — [LinkedIn](https://www.linkedin.com/in/deleep-augustian-1a91a110/)
+
