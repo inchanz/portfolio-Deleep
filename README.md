@@ -98,8 +98,26 @@ flowchart LR
   ```
 
 ### 3. Silver Cleansing & Idempotent Upsert ([`sql/03_silver_merge.sql`](sql/03_silver_merge.sql))
-- Trims whitespace, standardizes casing, and explicitly casts data types.
-- Deduplicates incoming batches via windowing and performs an idempotent `MERGE INTO`:
+- Trims whitespace, standardizes casing, and explicitly casts data types in a staging temporary view:
+  ```sql
+  -- Staging view with cleaned, typed, and deduplicated data from Bronze
+  CREATE OR REPLACE TEMP VIEW v_cleaned_bronze AS
+  SELECT 
+      UPPER(TRIM(country_code)) AS country_code,
+      TRIM(country_name) AS country_name,
+      CAST(year AS INT) AS year,
+      CAST(value AS DOUBLE) AS gdp_value,
+      _source_file_name,
+      CURRENT_TIMESTAMP() AS _silver_updated_at
+  FROM (
+      SELECT *,
+             ROW_NUMBER() OVER (PARTITION BY country_code, year ORDER BY _ingestion_timestamp DESC) as rn
+      FROM bronze_economic_data
+      WHERE country_code IS NOT NULL AND year IS NOT NULL
+  )
+  WHERE rn = 1;
+  ```
+- Performs an idempotent `MERGE INTO` from the staging view into the target Silver table:
   ```sql
   MERGE INTO silver_economic_data AS target
   USING v_cleaned_bronze AS source
@@ -110,6 +128,7 @@ flowchart LR
       INSERT (country_code, country_name, year, gdp_value, _source_file_name, _silver_updated_at)
       VALUES (source.country_code, source.country_name, source.year, source.gdp_value, source._source_file_name, CURRENT_TIMESTAMP());
   ```
+
 
 ### 4. Gold Analytical Modeling & Storage Optimization ([`sql/04_gold_analytics.sql`](sql/04_gold_analytics.sql))
 - Computes analytical metrics such as Year-over-Year (YoY) growth rate `%` using `LAG()`:
